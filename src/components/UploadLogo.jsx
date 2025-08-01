@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
+import { v4 as uuidv4 } from 'uuid';
 
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -10,6 +11,26 @@ export default function UploadLogo() {
   const [file, setFile] = useState(null);
   const [previewUrl, setPreviewUrl] = useState('');
   const [uploading, setUploading] = useState(false);
+  const [sessionId, setSessionId] = useState(null);
+  const [ipAddress, setIpAddress] = useState('');
+
+  // Generate or load session ID
+  useEffect(() => {
+    let id = localStorage.getItem('promo_session_id');
+    if (!id) {
+      id = uuidv4();
+      localStorage.setItem('promo_session_id', id);
+    }
+    setSessionId(id);
+  }, []);
+
+  // Fetch IP address
+  useEffect(() => {
+    fetch('https://api.ipify.org?format=json')
+      .then(res => res.json())
+      .then(data => setIpAddress(data.ip))
+      .catch(err => console.warn('IP fetch failed:', err));
+  }, []);
 
   const handleFileChange = (e) => {
     const selectedFile = e.target.files[0];
@@ -30,7 +51,7 @@ export default function UploadLogo() {
     for (let i = 0; i < data.length; i += 4) {
       const rgb = `${data[i]},${data[i + 1]},${data[i + 2]}`;
       colorSet.add(rgb);
-      if (colorSet.size > 1000) break; // cap for performance
+      if (colorSet.size > 1000) break;
     }
 
     return colorSet.size;
@@ -38,7 +59,6 @@ export default function UploadLogo() {
 
   const handleUpload = async () => {
     if (!file) return alert('Please choose a file.');
-
     setUploading(true);
 
     const filename = `${Date.now()}-${file.name}`;
@@ -57,7 +77,6 @@ export default function UploadLogo() {
       .from('uploads')
       .getPublicUrl(filename).data.publicUrl;
 
-    // Auto-analysis
     const fileType = file.type;
     const isVector = /\.(svg|pdf|ai)$/i.test(file.name);
     let width = null;
@@ -73,27 +92,15 @@ export default function UploadLogo() {
         height = img.height;
         colourCount = countUniqueColors(img);
 
-        // Final DB write
-        const { error: dbError } = await supabase.from('uploads').insert([
-          {
-            filename: file.name,
-            file_type: fileType,
-            is_vector: isVector,
-            width,
-            height,
-            colour_count: colourCount,
-            preview_url: previewPublicUrl,
-            ip_address: '', // Optional enhancement: use client IP API
-          }
-        ]);
-
-        setUploading(false);
-        if (dbError) {
-          console.error('DB insert error:', dbError);
-          alert('Upload succeeded but DB save failed');
-        } else {
-          alert('Upload complete ✅');
-        }
+        await logUpload({
+          filename: file.name,
+          file_type: fileType,
+          is_vector: isVector,
+          width,
+          height,
+          colour_count: colourCount,
+          preview_url: previewPublicUrl,
+        });
       };
 
       img.onerror = () => {
@@ -101,27 +108,31 @@ export default function UploadLogo() {
         setUploading(false);
       };
     } else {
-      // Vector = no pixel scan
-      const { error: dbError } = await supabase.from('uploads').insert([
-        {
-          filename: file.name,
-          file_type: fileType,
-          is_vector: isVector,
-          width: null,
-          height: null,
-          colour_count: null,
-          preview_url: previewPublicUrl,
-          ip_address: '',
-        }
-      ]);
+      await logUpload({
+        filename: file.name,
+        file_type: fileType,
+        is_vector: isVector,
+        preview_url: previewPublicUrl,
+      });
+    }
+  };
 
-      setUploading(false);
-      if (dbError) {
-        console.error('DB insert error:', dbError);
-        alert('Upload succeeded but DB save failed');
-      } else {
-        alert('Upload complete ✅');
+  const logUpload = async (meta) => {
+    const { error } = await supabase.from('uploads').insert([
+      {
+        ...meta,
+        session_id: sessionId,
+        ip_address: ipAddress,
+        uploaded_at: new Date().toISOString(),
       }
+    ]);
+
+    setUploading(false);
+    if (error) {
+      console.error('DB insert error:', error);
+      alert('Upload succeeded but DB save failed');
+    } else {
+      alert('Upload complete ✅');
     }
   };
 
